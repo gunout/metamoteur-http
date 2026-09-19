@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FTP METASEARCH — Multi-indexeurs</title>
-<meta name="description" content="Métamoteur FTP — Agrège plusieurs indexeurs de serveurs FTP publics">
+<title>FTP METASEARCH — Frontend only</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -118,7 +117,6 @@
     text-transform: uppercase;
     letter-spacing: 1.5px;
   }
-  .panel-header .actions { display: flex; gap: 6px; }
 
   .sources {
     display: grid;
@@ -143,6 +141,10 @@
     background: rgba(0,255,255,0.08);
     box-shadow: 0 0 10px rgba(0,255,255,0.2);
   }
+  .source.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
   .source input { display: none; }
   .source-check {
     width: 18px; height: 18px;
@@ -150,7 +152,6 @@
     border-radius: 4px;
     display: flex; align-items: center; justify-content: center;
     font-size: 11px; color: transparent; flex-shrink: 0;
-    transition: 0.2s;
   }
   .source.active .source-check {
     background: var(--cyan); color: #000; border-color: var(--cyan);
@@ -282,20 +283,6 @@
 
   .empty { text-align: center; padding: 40px; color: var(--cyan-dark); }
 
-  .api-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 10px;
-    border-radius: 12px;
-    font-size: 10px;
-    font-family: monospace;
-    margin-left: 10px;
-  }
-  .api-status.ok { background: rgba(0,255,102,0.15); color: var(--green); border: 1px solid var(--green); }
-  .api-status.err { background: rgba(255,51,51,0.15); color: var(--red); border: 1px solid var(--red); }
-  .api-status.checking { background: rgba(255,153,0,0.15); color: var(--orange); border: 1px solid var(--orange); }
-
   @media (max-width: 700px) {
     h1 { font-size: 18px; }
     .source { padding: 8px; }
@@ -306,8 +293,8 @@
 <body>
 <div class="container">
 
-  <h1>🛰 FTP METASEARCH <span id="apiStatus" class="api-status checking">API: …</span></h1>
-  <div class="sub">Agrégateur d'indexeurs FTP · Internet Archive · Wikimedia · Gutenberg · arXiv · Napalm · Jamendo</div>
+  <h1>🛰 FTP METASEARCH</h1>
+  <div class="sub">Version 100 % frontend · GitHub Pages · Aucun backend requis</div>
 
   <div class="panel">
     <label>Mot-clé (artiste, album, fichier...)</label>
@@ -320,10 +307,6 @@
   <div class="panel">
     <div class="panel-header">
       <h2>🔧 Sources</h2>
-      <div class="actions">
-        <button class="small" onclick="selectAll(true)">TOUT</button>
-        <button class="small" onclick="selectAll(false)">RIEN</button>
-      </div>
     </div>
     <div class="sources" id="sourcesGrid"></div>
 
@@ -354,37 +337,99 @@
 <script>
 'use strict';
 
-/* =========================================================
-   CONFIG API — bascule auto local / prod
-   ========================================================= */
-const API_BASE = (() => {
-  const host = window.location.hostname;
-  // Local : même origine
-  if (host === 'localhost' || host === '127.0.0.1' || host === '') {
-    return window.location.origin;
-  }
-  // GitHub Pages → Render backend
-  if (host.endsWith('github.io')) {
-    return 'https://metamoteur-http-api.onrender.com';
-  }
-  // Fallback : même origine (Vercel, Railway, etc.)
-  return window.location.origin;
-})();
-
-console.log('[API_BASE]', API_BASE);
-
 const $ = id => document.getElementById(id);
 
+/* =========================================================
+   DETECTION TYPE
+   ========================================================= */
+function detectType(str) {
+  const ext = (String(str).split('?')[0].split('.').pop() || '').toLowerCase();
+  if (['mp3','flac','m4a','ogg','wav','aac','opus'].includes(ext)) return 'audio';
+  if (['mp4','mkv','avi','webm','mov','mpg','mpeg','ogv'].includes(ext)) return 'video';
+  if (['epub','pdf','mobi','azw3','djvu','txt'].includes(ext)) return 'book';
+  if (['zip','rar','7z','iso','tar','gz'].includes(ext)) return 'archive';
+  return 'other';
+}
+
+/* =========================================================
+   SOURCES DIRECTES (CORS ouvert)
+   ========================================================= */
 const SOURCES = [
-  { id: 'archive',     name: 'Internet Archive',   desc: 'Millions de fichiers libres', enabled: true },
-  { id: 'commons',     name: 'Wikimedia Commons',  desc: 'Médias libres',               enabled: true },
-  { id: 'openlib',     name: 'Open Library',       desc: 'Livres + métadonnées',        enabled: true },
-  { id: 'gutenberg',   name: 'Project Gutenberg',  desc: 'Livres domaine public',       enabled: true },
-  { id: 'arxiv',       name: 'arXiv',              desc: 'Publications PDF',            enabled: true },
-  { id: 'jamendo',     name: 'Jamendo',            desc: 'Musique libre de droits',     enabled: true },
-  { id: 'napalm',      name: 'Napalm FTP',         desc: 'Indexeur FTP (proxy)',        enabled: false },
-  { id: 'mamont',      name: 'Mamont FTP',         desc: 'Index FTP public',            enabled: false },
-  { id: 'filepursuit', name: 'FilePursuit',        desc: 'Indexeur de serveurs ouverts',enabled: false }
+  {
+    id: 'archive',
+    name: 'Internet Archive',
+    desc: 'Audio · Vidéo · Livres',
+    enabled: true,
+    async search(query) {
+      const url = 'https://archive.org/advancedsearch.php?q=' +
+        encodeURIComponent(query) +
+        '&fl[]=identifier&fl[]=title&fl[]=mediatype&fl[]=creator&fl[]=year' +
+        '&rows=30&output=json';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const docs = data?.response?.docs || [];
+      return docs.map(d => {
+        let type = 'book';
+        if (d.mediatype === 'audio') type = 'audio';
+        else if (d.mediatype === 'movies') type = 'video';
+        return {
+          title: d.title || d.identifier,
+          url: 'https://archive.org/details/' + d.identifier,
+          downloadUrl: 'https://archive.org/download/' + d.identifier,
+          source: 'Internet Archive',
+          type,
+          extra: [d.creator, d.year].filter(Boolean).join(' · ')
+        };
+      });
+    }
+  },
+  {
+    id: 'commons',
+    name: 'Wikimedia Commons',
+    desc: 'Médias libres',
+    enabled: true,
+    async search(query) {
+      const url = 'https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=' +
+        encodeURIComponent(query) + '&srnamespace=6&format=json&origin=*&srlimit=30';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const items = data?.query?.search || [];
+      return items.map(r => {
+        const fileTitle = r.title.replace('File:', '');
+        return {
+          title: fileTitle,
+          url: 'https://commons.wikimedia.org/wiki/File:' + encodeURIComponent(fileTitle),
+          downloadUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/' + encodeURIComponent(fileTitle),
+          source: 'Wikimedia Commons',
+          type: detectType(fileTitle),
+          extra: (r.snippet || '').replace(/<[^>]+>/g, '').slice(0, 150)
+        };
+      });
+    }
+  },
+  {
+    id: 'openlib',
+    name: 'Open Library',
+    desc: 'Livres + métadonnées',
+    enabled: true,
+    async search(query) {
+      const url = 'https://openlibrary.org/search.json?q=' + encodeURIComponent(query) + '&limit=30';
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const docs = data?.docs || [];
+      return docs.map(d => ({
+        title: d.title + (d.author_name ? ' — ' + d.author_name.join(', ') : ''),
+        url: 'https://openlibrary.org' + d.key,
+        downloadUrl: 'https://openlibrary.org' + d.key,
+        source: 'Open Library',
+        type: 'book',
+        extra: [d.first_publish_year, d.publisher && d.publisher[0]].filter(Boolean).join(' · ')
+      }));
+    }
+  }
 ];
 
 let currentFilter = 'all';
@@ -399,7 +444,7 @@ function log(msg, cls = 'info') {
   $('log').scrollTop = $('log').scrollHeight;
 }
 
-/* === SOURCES === */
+/* === SOURCES UI === */
 function renderSources() {
   const grid = $('sourcesGrid');
   grid.innerHTML = '';
@@ -424,11 +469,6 @@ function renderSources() {
     el.appendChild(info);
     grid.appendChild(el);
   });
-}
-
-function selectAll(val) {
-  SOURCES.forEach(s => { s.enabled = val; });
-  renderSources();
 }
 
 /* === FILTRES === */
@@ -527,77 +567,59 @@ function renderResults() {
   $('count').textContent = filtered.length;
 }
 
-/* === HEALTH CHECK === */
-async function checkApi() {
-  const badge = $('apiStatus');
-  try {
-    const res = await fetch(API_BASE + '/health', { method: 'GET' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    if (data.status === 'ok') {
-      badge.className = 'api-status ok';
-      badge.textContent = 'API: OK';
-      return true;
-    }
-    throw new Error('Status non OK');
-  } catch (e) {
-    badge.className = 'api-status err';
-    badge.textContent = 'API: HORS LIGNE';
-    log('⚠ Backend injoignable : ' + e.message, 'err');
-    log('→ Vérifie que le backend Render est déployé et réveillé.', 'warn');
-    return false;
-  }
-}
-
 /* === RECHERCHE === */
 async function runSearch() {
   const kw = $('kw').value.trim();
   if (!kw) { alert('Tape un mot-clé.'); return; }
 
-  const activeSources = SOURCES.filter(s => s.enabled).map(s => s.id);
+  const activeSources = SOURCES.filter(s => s.enabled);
   if (activeSources.length === 0) { alert('Sélectionne au moins une source.'); return; }
 
   $('searchBtn').disabled = true;
   $('results').innerHTML = '<div class="empty">⏳ Recherche en cours...</div>';
   $('sourceStats').textContent = '';
   log('═══ Recherche : "' + kw + '" ═══', 'info');
-  log('Sources : ' + activeSources.join(', '), 'info');
-  log('API : ' + API_BASE, 'info');
+  log('Sources : ' + activeSources.map(s => s.name).join(', '), 'info');
 
   const startTime = Date.now();
   const timer = setInterval(() => {
     $('time').textContent = Math.round((Date.now() - startTime) / 1000);
   }, 200);
 
-  try {
-    const url = API_BASE + '/api/search?q=' + encodeURIComponent(kw) +
-      '&sources=' + activeSources.join(',');
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+  allResults = [];
+  const stats = {};
 
-    allResults = data.results || [];
+  const promises = activeSources.map(async (src) => {
+    try {
+      log('→ ' + src.name + '...', 'info');
+      const results = await src.search(kw);
+      log('  ✓ ' + results.length + ' résultat(s)', results.length > 0 ? 'ok' : 'warn');
+      stats[src.id] = results.length;
+      allResults.push(...results);
+    } catch (e) {
+      log('  ✗ ' + src.name + ' : ' + e.message, 'err');
+      stats[src.id] = 0;
+    }
+  });
 
-    log('✓ ' + allResults.length + ' résultat(s) au total', 'ok');
-    Object.entries(data.stats || {}).forEach(([src, n]) => {
-      log('  • ' + src + ' : ' + n + ' résultat(s)', n > 0 ? 'ok' : 'warn');
-    });
+  await Promise.allSettled(promises);
 
-    const statsText = Object.entries(data.stats || {})
-      .map(([k, v]) => k + ': ' + v).join(' · ');
-    $('sourceStats').textContent = statsText;
+  // Déduplication
+  const seen = new Set();
+  allResults = allResults.filter(r => {
+    if (!r.url || seen.has(r.url)) return false;
+    seen.add(r.url);
+    return true;
+  });
 
-    renderResults();
-    log('═══ Terminé ═══', 'ok');
-  } catch (e) {
-    log('✗ Erreur : ' + e.message, 'err');
-    $('results').innerHTML =
-      '<div class="empty">Erreur : ' + e.message +
-      '<br><small>Le backend est peut-être endormi (Render Free). Réessaie dans 30 s.</small></div>';
-  } finally {
-    clearInterval(timer);
-    $('searchBtn').disabled = false;
-  }
+  renderResults();
+  $('sourceStats').textContent = Object.entries(stats)
+    .map(([k, v]) => k + ': ' + v).join(' · ');
+
+  log('═══ Terminé : ' + allResults.length + ' résultat(s) ═══', 'ok');
+
+  clearInterval(timer);
+  $('searchBtn').disabled = false;
 }
 
 $('kw').addEventListener('keypress', e => {
@@ -606,8 +628,8 @@ $('kw').addEventListener('keypress', e => {
 
 /* === INIT === */
 renderSources();
-log('Système prêt.', 'ok');
-checkApi();
+log('Système prêt (100 % frontend).', 'ok');
+log('Sources actives : Internet Archive, Wikimedia Commons, Open Library.', 'info');
 </script>
 </body>
 </html>
