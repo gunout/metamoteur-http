@@ -282,6 +282,20 @@
 
   .empty { text-align: center; padding: 40px; color: var(--cyan-dark); }
 
+  .api-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 10px;
+    font-family: monospace;
+    margin-left: 10px;
+  }
+  .api-status.ok { background: rgba(0,255,102,0.15); color: var(--green); border: 1px solid var(--green); }
+  .api-status.err { background: rgba(255,51,51,0.15); color: var(--red); border: 1px solid var(--red); }
+  .api-status.checking { background: rgba(255,153,0,0.15); color: var(--orange); border: 1px solid var(--orange); }
+
   @media (max-width: 700px) {
     h1 { font-size: 18px; }
     .source { padding: 8px; }
@@ -292,7 +306,7 @@
 <body>
 <div class="container">
 
-  <h1>🛰 FTP METASEARCH</h1>
+  <h1>🛰 FTP METASEARCH <span id="apiStatus" class="api-status checking">API: …</span></h1>
   <div class="sub">Agrégateur d'indexeurs FTP · Internet Archive · Wikimedia · Gutenberg · arXiv · Napalm · Jamendo</div>
 
   <div class="panel">
@@ -338,6 +352,27 @@
 </div>
 
 <script>
+'use strict';
+
+/* =========================================================
+   CONFIG API — bascule auto local / prod
+   ========================================================= */
+const API_BASE = (() => {
+  const host = window.location.hostname;
+  // Local : même origine
+  if (host === 'localhost' || host === '127.0.0.1' || host === '') {
+    return window.location.origin;
+  }
+  // GitHub Pages → Render backend
+  if (host.endsWith('github.io')) {
+    return 'https://metamoteur-http-api.onrender.com';
+  }
+  // Fallback : même origine (Vercel, Railway, etc.)
+  return window.location.origin;
+})();
+
+console.log('[API_BASE]', API_BASE);
+
 const $ = id => document.getElementById(id);
 
 const SOURCES = [
@@ -492,6 +527,28 @@ function renderResults() {
   $('count').textContent = filtered.length;
 }
 
+/* === HEALTH CHECK === */
+async function checkApi() {
+  const badge = $('apiStatus');
+  try {
+    const res = await fetch(API_BASE + '/health', { method: 'GET' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (data.status === 'ok') {
+      badge.className = 'api-status ok';
+      badge.textContent = 'API: OK';
+      return true;
+    }
+    throw new Error('Status non OK');
+  } catch (e) {
+    badge.className = 'api-status err';
+    badge.textContent = 'API: HORS LIGNE';
+    log('⚠ Backend injoignable : ' + e.message, 'err');
+    log('→ Vérifie que le backend Render est déployé et réveillé.', 'warn');
+    return false;
+  }
+}
+
 /* === RECHERCHE === */
 async function runSearch() {
   const kw = $('kw').value.trim();
@@ -505,6 +562,7 @@ async function runSearch() {
   $('sourceStats').textContent = '';
   log('═══ Recherche : "' + kw + '" ═══', 'info');
   log('Sources : ' + activeSources.join(', '), 'info');
+  log('API : ' + API_BASE, 'info');
 
   const startTime = Date.now();
   const timer = setInterval(() => {
@@ -512,8 +570,8 @@ async function runSearch() {
   }, 200);
 
   try {
-    const API_BASE = 'https://metamoteur-http-api.onrender.com';
-    const url = API_BASE + '/api/search?q=' + encodeURIComponent(kw) + '&sources=' + activeSources.join(',');
+    const url = API_BASE + '/api/search?q=' + encodeURIComponent(kw) +
+      '&sources=' + activeSources.join(',');
     const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
@@ -533,7 +591,9 @@ async function runSearch() {
     log('═══ Terminé ═══', 'ok');
   } catch (e) {
     log('✗ Erreur : ' + e.message, 'err');
-    $('results').innerHTML = '<div class="empty">Erreur : ' + e.message + '</div>';
+    $('results').innerHTML =
+      '<div class="empty">Erreur : ' + e.message +
+      '<br><small>Le backend est peut-être endormi (Render Free). Réessaie dans 30 s.</small></div>';
   } finally {
     clearInterval(timer);
     $('searchBtn').disabled = false;
@@ -547,6 +607,7 @@ $('kw').addEventListener('keypress', e => {
 /* === INIT === */
 renderSources();
 log('Système prêt.', 'ok');
+checkApi();
 </script>
 </body>
 </html>
