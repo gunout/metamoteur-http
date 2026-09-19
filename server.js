@@ -5,15 +5,50 @@ const cors = require('cors');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.static(path.join(__dirname, 'public')));
+/* =========================================================
+   CORS — autorise GitHub Pages + localhost + Render/Vercel
+   ========================================================= */
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:5500',
+  'http://127.0.0.1:3000',
+  'https://gunout.github.io',
+  /\.onrender\.com$/,
+  /\.vercel\.app$/,
+  /\.railway\.app$/
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // curl / Postman
+    const ok = ALLOWED_ORIGINS.some(o =>
+      typeof o === 'string' ? o === origin : o.test(origin)
+    );
+    callback(null, ok); // renvoie true/false, pas d'erreur bloquante
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  credentials: false
+}));
+
+app.use(express.json());
 
 /* =========================================================
-   CONFIG
+   STATIC — sert docs/ en priorité, puis public/
+   ========================================================= */
+const DOCS_DIR = path.join(__dirname, 'docs');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+if (fs.existsSync(DOCS_DIR)) app.use(express.static(DOCS_DIR));
+if (fs.existsSync(PUBLIC_DIR)) app.use(express.static(PUBLIC_DIR));
+app.use(express.static(__dirname)); // fallback racine
+
+/* =========================================================
+   CONFIG HTTP
    ========================================================= */
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
@@ -122,7 +157,7 @@ async function searchOpenLib(query) {
 }
 
 /* =========================================================
-   MOTEUR 4 : Project Gutenberg (via Gutendex)
+   MOTEUR 4 : Project Gutenberg
    ========================================================= */
 async function searchGutenberg(query) {
   try {
@@ -190,7 +225,7 @@ async function searchArxiv(query) {
 }
 
 /* =========================================================
-   MOTEUR 6 : FilePursuit (peut être instable)
+   MOTEUR 6 : FilePursuit
    ========================================================= */
 async function searchFilePursuit(query) {
   try {
@@ -224,7 +259,7 @@ async function searchFilePursuit(query) {
 }
 
 /* =========================================================
-   MOTEUR 7 : Mamont's Open FTP Index
+   MOTEUR 7 : Mamont FTP
    ========================================================= */
 async function searchMamont(query) {
   try {
@@ -255,7 +290,7 @@ async function searchMamont(query) {
 }
 
 /* =========================================================
-   MOTEUR 8 : Napalm FTP Indexer (via proxy)
+   MOTEUR 8 : Napalm FTP Indexer
    ========================================================= */
 async function searchNapalm(query) {
   try {
@@ -292,7 +327,7 @@ async function searchNapalm(query) {
 }
 
 /* =========================================================
-   MOTEUR 9 : Jamendo (audio libre)
+   MOTEUR 9 : Jamendo
    ========================================================= */
 async function searchJamendo(query) {
   try {
@@ -369,7 +404,6 @@ app.get('/api/search', async (req, res) => {
     }
   });
 
-  // Déduplication par URL
   const seen = new Set();
   const deduped = all.filter(item => {
     if (!item.url || seen.has(item.url)) return false;
@@ -387,9 +421,19 @@ app.get('/api/search', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
-// SPA fallback
+/* =========================================================
+   SPA FALLBACK — sert index.html depuis docs/, public/ ou racine
+   ========================================================= */
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  const candidates = [
+    path.join(__dirname, 'docs', 'index.html'),
+    path.join(__dirname, 'public', 'index.html'),
+    path.join(__dirname, 'index.html')
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return res.sendFile(p);
+  }
+  res.status(404).send('index.html introuvable');
 });
 
 /* =========================================================
