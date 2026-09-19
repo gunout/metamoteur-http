@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FTP METASEARCH — Frontend only</title>
+<title>FTP METASEARCH — Liens HTTP directs</title>
+<meta name="description" content="Métamoteur de recherche — Extraction de liens HTTP directs vers audio, vidéo et livres">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -141,10 +142,6 @@
     background: rgba(0,255,255,0.08);
     box-shadow: 0 0 10px rgba(0,255,255,0.2);
   }
-  .source.disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
   .source input { display: none; }
   .source-check {
     width: 18px; height: 18px;
@@ -192,7 +189,7 @@
     padding: 10px;
     font-family: monospace;
     font-size: 11px;
-    max-height: 120px;
+    max-height: 140px;
     overflow-y: auto;
     margin-top: 10px;
   }
@@ -267,7 +264,7 @@
   .result-actions {
     display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
   }
-  .result-actions a {
+  .result-actions a, .result-actions button {
     width: 36px; height: 36px;
     display: flex; align-items: center; justify-content: center;
     border: 1px solid var(--cyan-dark);
@@ -276,12 +273,26 @@
     text-decoration: none;
     transition: 0.2s;
     font-size: 16px;
+    background: rgba(0,0,0,0.3);
+    cursor: pointer;
+    padding: 0;
   }
-  .result-actions a:hover { background: var(--cyan); color: #000; }
+  .result-actions a:hover, .result-actions button:hover {
+    background: var(--cyan); color: #000;
+  }
   .result-actions a.dl { border-color: var(--green); color: var(--green); }
   .result-actions a.dl:hover { background: var(--green); color: #000; }
+  .result-actions button.copy { border-color: var(--orange); color: var(--orange); }
+  .result-actions button.copy:hover { background: var(--orange); color: #000; }
 
   .empty { text-align: center; padding: 40px; color: var(--cyan-dark); }
+
+  .export-bar {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    padding-top: 15px;
+    border-top: 1px solid rgba(0,136,170,0.3);
+    margin-top: 15px;
+  }
 
   @media (max-width: 700px) {
     h1 { font-size: 18px; }
@@ -294,12 +305,12 @@
 <div class="container">
 
   <h1>🛰 FTP METASEARCH</h1>
-  <div class="sub">Version 100 % frontend · GitHub Pages · Aucun backend requis</div>
+  <div class="sub">Extraction de liens HTTP directs · Audio · Vidéo · Livres</div>
 
   <div class="panel">
     <label>Mot-clé (artiste, album, fichier...)</label>
     <div class="search-row">
-      <input type="text" id="kw" placeholder="Ex: Pink Floyd, Dark Side of the Moon..." autofocus>
+      <input type="text" id="kw" placeholder="Ex: Nirvana, Pink Floyd, Victor Hugo..." autofocus>
       <button id="searchBtn" onclick="runSearch()">🔍 CHERCHER</button>
     </div>
   </div>
@@ -323,12 +334,20 @@
 
   <div class="panel">
     <div class="stats">
-      <span>🎯 <span id="count">0</span> résultats</span>
+      <span>🎯 <span id="count">0</span> liens HTTP</span>
       <span>⏱ <span id="time">0</span>s</span>
       <span id="sourceStats"></span>
     </div>
     <div class="results-list" id="results">
       <div class="empty">Aucun résultat. Lance une recherche.</div>
+    </div>
+
+    <div class="export-bar">
+      <button class="small" onclick="exportTxt()">📄 Export TXT</button>
+      <button class="small" onclick="exportCsv()">📊 Export CSV</button>
+      <button class="small" onclick="exportJson()">🔧 Export JSON</button>
+      <button class="small" onclick="copyAll()">📋 Copier toutes les URLs</button>
+      <button class="small" onclick="clearResults()">🗑 Effacer</button>
     </div>
   </div>
 
@@ -352,82 +371,134 @@ function detectType(str) {
 }
 
 /* =========================================================
-   SOURCES DIRECTES (CORS ouvert)
+   SOURCES AVEC EXTRACTION DE LIENS HTTP DIRECTS
    ========================================================= */
 const SOURCES = [
   {
     id: 'archive',
     name: 'Internet Archive',
-    desc: 'Audio · Vidéo · Livres',
+    desc: 'Fichiers audio/vidéo/livres',
     enabled: true,
     async search(query) {
-      const url = 'https://archive.org/advancedsearch.php?q=' +
+      // 1. Rechercher les items
+      const searchUrl = 'https://archive.org/advancedsearch.php?q=' +
         encodeURIComponent(query) +
         '&fl[]=identifier&fl[]=title&fl[]=mediatype&fl[]=creator&fl[]=year' +
-        '&rows=30&output=json';
-      const res = await fetch(url);
+        '&rows=15&output=json';
+
+      const res = await fetch(searchUrl);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       const docs = data?.response?.docs || [];
-      return docs.map(d => {
-        let type = 'book';
-        if (d.mediatype === 'audio') type = 'audio';
-        else if (d.mediatype === 'movies') type = 'video';
-        return {
-          title: d.title || d.identifier,
-          url: 'https://archive.org/details/' + d.identifier,
-          downloadUrl: 'https://archive.org/download/' + d.identifier,
-          source: 'Internet Archive',
-          type,
-          extra: [d.creator, d.year].filter(Boolean).join(' · ')
-        };
-      });
+
+      // 2. Extraire les fichiers réels via metadata API
+      const results = [];
+      const exts = ['mp3','flac','m4a','ogg','wav','aac','opus',
+                    'mp4','mkv','avi','webm','mov','mpg','mpeg',
+                    'epub','pdf','mobi','azw3','djvu','txt',
+                    'zip','rar','7z','iso'];
+
+      for (const d of docs) {
+        try {
+          const metaUrl = 'https://archive.org/metadata/' + d.identifier;
+          const metaRes = await fetch(metaUrl);
+          if (!metaRes.ok) continue;
+          const meta = await metaRes.json();
+          const files = meta.files || [];
+
+          for (const f of files) {
+            const name = f.name || '';
+            const ext = (name.split('.').pop() || '').toLowerCase();
+            if (!exts.includes(ext)) continue;
+
+            // Construire le vrai lien HTTP direct
+            const directUrl = 'https://archive.org/download/' +
+              encodeURIComponent(d.identifier) + '/' +
+              encodeURIComponent(name).replace(/%2F/g, '/');
+
+            const sizeMB = f.size ? Math.round(parseInt(f.size) / 1024 / 1024) + ' MB' : '';
+
+            results.push({
+              title: name,
+              url: directUrl,
+              downloadUrl: directUrl,
+              source: 'Internet Archive',
+              type: detectType(name),
+              extra: [d.title || d.identifier, sizeMB].filter(Boolean).join(' · ')
+            });
+
+            if (results.length >= 150) break;
+          }
+          if (results.length >= 150) break;
+        } catch (e) {
+          // item ignoré
+        }
+      }
+      return results;
     }
   },
   {
     id: 'commons',
     name: 'Wikimedia Commons',
-    desc: 'Médias libres',
+    desc: 'Fichiers libres',
     enabled: true,
     async search(query) {
-      const url = 'https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=' +
+      // 1. Chercher les fichiers
+      const searchUrl = 'https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=' +
         encodeURIComponent(query) + '&srnamespace=6&format=json&origin=*&srlimit=30';
-      const res = await fetch(url);
+
+      const res = await fetch(searchUrl);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
       const items = data?.query?.search || [];
-      return items.map(r => {
+
+      const exts = ['mp3','flac','m4a','ogg','wav','aac','opus',
+                    'mp4','mkv','avi','webm','mov','ogv',
+                    'epub','pdf','mobi','djvu'];
+
+      // 2. Filtrer par extension
+      const wanted = items.filter(r => {
         const fileTitle = r.title.replace('File:', '');
-        return {
+        const ext = (fileTitle.split('.').pop() || '').toLowerCase();
+        return exts.includes(ext);
+      }).slice(0, 20);
+
+      if (wanted.length === 0) return [];
+
+      // 3. Récupérer les URLs directes en batch
+      const titles = wanted.map(r => r.title).join('|');
+      const infoUrl = 'https://commons.wikimedia.org/w/api.php?action=query&titles=' +
+        encodeURIComponent(titles) +
+        '&prop=imageinfo&iiprop=url|size&format=json&origin=*';
+
+      const infoRes = await fetch(infoUrl);
+      if (!infoRes.ok) throw new Error('HTTP ' + infoRes.status);
+      const infoData = await infoRes.json();
+      const pages = infoData?.query?.pages || {};
+
+      const results = [];
+      for (const r of wanted) {
+        const fileTitle = r.title.replace('File:', '');
+        // Trouver la page correspondante
+        const page = Object.values(pages).find(p =>
+          p.title && p.title.replace('File:', '') === fileTitle
+        );
+        const directUrl = page?.imageinfo?.[0]?.url;
+        if (!directUrl) continue;
+
+        const size = page?.imageinfo?.[0]?.size;
+        const sizeMB = size ? Math.round(size / 1024 / 1024) + ' MB' : '';
+
+        results.push({
           title: fileTitle,
-          url: 'https://commons.wikimedia.org/wiki/File:' + encodeURIComponent(fileTitle),
-          downloadUrl: 'https://commons.wikimedia.org/wiki/Special:FilePath/' + encodeURIComponent(fileTitle),
+          url: directUrl,
+          downloadUrl: directUrl,
           source: 'Wikimedia Commons',
           type: detectType(fileTitle),
-          extra: (r.snippet || '').replace(/<[^>]+>/g, '').slice(0, 150)
-        };
-      });
-    }
-  },
-  {
-    id: 'openlib',
-    name: 'Open Library',
-    desc: 'Livres + métadonnées',
-    enabled: true,
-    async search(query) {
-      const url = 'https://openlibrary.org/search.json?q=' + encodeURIComponent(query) + '&limit=30';
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
-      const docs = data?.docs || [];
-      return docs.map(d => ({
-        title: d.title + (d.author_name ? ' — ' + d.author_name.join(', ') : ''),
-        url: 'https://openlibrary.org' + d.key,
-        downloadUrl: 'https://openlibrary.org' + d.key,
-        source: 'Open Library',
-        type: 'book',
-        extra: [d.first_publish_year, d.publisher && d.publisher[0]].filter(Boolean).join(' · ')
-      }));
+          extra: sizeMB
+        });
+      }
+      return results;
     }
   }
 ];
@@ -547,16 +618,28 @@ function renderResults() {
     openA.textContent = '↗';
     actions.appendChild(openA);
 
-    if (r.downloadUrl && r.downloadUrl !== r.url) {
-      const dlA = document.createElement('a');
-      dlA.href = r.downloadUrl;
-      dlA.className = 'dl';
-      dlA.target = '_blank';
-      dlA.rel = 'noopener';
-      dlA.title = 'Télécharger';
-      dlA.textContent = '⬇';
-      actions.appendChild(dlA);
-    }
+    const dlA = document.createElement('a');
+    dlA.href = r.downloadUrl || r.url;
+    dlA.className = 'dl';
+    dlA.target = '_blank';
+    dlA.rel = 'noopener';
+    dlA.title = 'Télécharger';
+    dlA.textContent = '⬇';
+    actions.appendChild(dlA);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy';
+    copyBtn.title = 'Copier l\'URL';
+    copyBtn.textContent = '📋';
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(r.url);
+        log('URL copiée : ' + r.url.slice(0, 80), 'ok');
+      } catch (e) {
+        log('Copie impossible', 'err');
+      }
+    };
+    actions.appendChild(copyBtn);
 
     card.appendChild(icon);
     card.appendChild(body);
@@ -576,7 +659,7 @@ async function runSearch() {
   if (activeSources.length === 0) { alert('Sélectionne au moins une source.'); return; }
 
   $('searchBtn').disabled = true;
-  $('results').innerHTML = '<div class="empty">⏳ Recherche en cours...</div>';
+  $('results').innerHTML = '<div class="empty">⏳ Recherche en cours... Cela peut prendre 10-30 secondes.</div>';
   $('sourceStats').textContent = '';
   log('═══ Recherche : "' + kw + '" ═══', 'info');
   log('Sources : ' + activeSources.map(s => s.name).join(', '), 'info');
@@ -593,7 +676,7 @@ async function runSearch() {
     try {
       log('→ ' + src.name + '...', 'info');
       const results = await src.search(kw);
-      log('  ✓ ' + results.length + ' résultat(s)', results.length > 0 ? 'ok' : 'warn');
+      log('  ✓ ' + results.length + ' lien(s) HTTP', results.length > 0 ? 'ok' : 'warn');
       stats[src.id] = results.length;
       allResults.push(...results);
     } catch (e) {
@@ -616,7 +699,7 @@ async function runSearch() {
   $('sourceStats').textContent = Object.entries(stats)
     .map(([k, v]) => k + ': ' + v).join(' · ');
 
-  log('═══ Terminé : ' + allResults.length + ' résultat(s) ═══', 'ok');
+  log('═══ Terminé : ' + allResults.length + ' lien(s) HTTP direct(s) ═══', 'ok');
 
   clearInterval(timer);
   $('searchBtn').disabled = false;
@@ -626,10 +709,75 @@ $('kw').addEventListener('keypress', e => {
   if (e.key === 'Enter') runSearch();
 });
 
+/* === EXPORTS === */
+function downloadFile(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 100);
+}
+
+function timestamp() {
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}
+
+function exportTxt() {
+  if (allResults.length === 0) return alert('Aucun résultat.');
+  const txt = allResults.map(r => r.url).join('\n');
+  downloadFile(txt, 'liens-http_' + timestamp() + '.txt', 'text/plain');
+  log('Export TXT : ' + allResults.length + ' URLs', 'ok');
+}
+
+function exportCsv() {
+  if (allResults.length === 0) return alert('Aucun résultat.');
+  const rows = [['type', 'source', 'title', 'url']];
+  allResults.forEach(r => {
+    rows.push([
+      r.type,
+      r.source,
+      '"' + (r.title || '').replace(/"/g, '""') + '"',
+      '"' + r.url.replace(/"/g, '""') + '"'
+    ]);
+  });
+  downloadFile(rows.map(r => r.join(',')).join('\n'), 'liens-http_' + timestamp() + '.csv', 'text/csv');
+  log('Export CSV : ' + allResults.length + ' lignes', 'ok');
+}
+
+function exportJson() {
+  if (allResults.length === 0) return alert('Aucun résultat.');
+  downloadFile(JSON.stringify(allResults, null, 2), 'liens-http_' + timestamp() + '.json', 'application/json');
+  log('Export JSON : ' + allResults.length + ' objets', 'ok');
+}
+
+async function copyAll() {
+  if (allResults.length === 0) return alert('Aucun résultat.');
+  const txt = allResults.map(r => r.url).join('\n');
+  try {
+    await navigator.clipboard.writeText(txt);
+    log(allResults.length + ' URLs copiées dans le presse-papier', 'ok');
+  } catch (e) {
+    log('Copie impossible', 'err');
+  }
+}
+
+function clearResults() {
+  allResults = [];
+  renderResults();
+  log('Résultats effacés', 'info');
+}
+
 /* === INIT === */
 renderSources();
 log('Système prêt (100 % frontend).', 'ok');
-log('Sources actives : Internet Archive, Wikimedia Commons, Open Library.', 'info');
+log('Sources : Internet Archive (metadata API) + Wikimedia Commons (imageinfo API).', 'info');
+log('Chaque fichier est extrait individuellement pour obtenir un lien HTTP direct.', 'info');
 </script>
 </body>
 </html>
