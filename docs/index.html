@@ -512,7 +512,8 @@ async function runSearch() {
   }, 200);
 
   try {
-    const url = '/api/search?q=' + encodeURIComponent(kw) + '&sources=' + activeSources.join(',');
+    const API_BASE = 'https://metamoteur-http-api.onrender.com';
+    const url = API_BASE + '/api/search?q=' + encodeURIComponent(kw) + '&sources=' + activeSources.join(',');
     const res = await fetch(url);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
